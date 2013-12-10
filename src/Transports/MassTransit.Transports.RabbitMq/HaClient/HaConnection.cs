@@ -64,9 +64,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                     _connection = null;
 
                     if (_log.IsDebugEnabled)
-                    {
                         _log.DebugFormat("Connection closed: {0}", ToString());
-                    }
                 }
 
                 _disposed = true;
@@ -290,6 +288,41 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             }
         }
 
+        void ConfigureConnection(IConnection connection)
+        {
+            connection.ConnectionShutdown += HandleConnectionShutdown;
+            connection.CallbackException += HandleCallbackException;
+        }
+
+        void DetachConnection(IConnection connection)
+        {
+            connection.CallbackException -= HandleCallbackException;
+            connection.ConnectionShutdown -= HandleConnectionShutdown;
+        }
+
+        void HandleConnectionShutdown(IConnection connection, ShutdownEventArgs reason)
+        {
+            using (TimedLock.Lock(_monitor, _lockTimeout))
+            {
+                if (_log.IsDebugEnabled)
+                {
+                    _log.DebugFormat("ConnectionShutdown on connection: {3}, {0} - {1} ({2})", reason.ReplyCode,
+                        reason.ReplyText, reason.Initiator, _connection);
+                }
+
+                DetachConnection(connection);
+
+                _connection = null;
+            }
+        }
+
+        void HandleCallbackException(object sender, CallbackExceptionEventArgs e)
+        {
+            if (_log.IsErrorEnabled)
+                _log.Error("A RabbitMQ callback threw an exception", e.Exception);
+        }
+
+
         /// <summary>
         /// Asynchronously connect to the RabbitMQ server using the connection factory
         /// </summary>
@@ -311,15 +344,17 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
                     try
                     {
-                        _connection = _retryPolicy.Execute(() =>
+                        IConnection connection = _retryPolicy.Execute(() =>
                             {
                                 if (_log.IsDebugEnabled)
-                                {
                                     _log.DebugFormat("Connecting to RabbitMQ: {0}", ToString());
-                                }
 
                                 return _connectionFactory.CreateConnection();
                             });
+
+                        ConfigureConnection(connection);
+
+                        _connection = connection;
                     }
                     finally
                     {
@@ -332,9 +367,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             catch (Exception ex)
             {
                 if (_log.IsErrorEnabled)
-                {
                     _log.Error(string.Format("Failed to connect to RabbitMQ: {0}", ToString()), ex);
-                }
             }
         }
     }

@@ -15,11 +15,13 @@ namespace MassTransit.Util
     using System;
     using System.Collections.Generic;
     using System.Threading;
+    using Logging;
 
 
     public static class Retry
     {
         public static readonly IRetryExceptionPolicy All = new RetryAllRetryExceptionPolicy();
+        static readonly ILog _log = Logger.Get<RetryPolicy>();
 
         public static void Execute(this RetryPolicy retryPolicy, Action action)
         {
@@ -61,6 +63,12 @@ namespace MassTransit.Util
                     {
                         if (!retryInterval.MoveNext() || policy.Filter(ex))
                             throw;
+
+                        if (_log.IsDebugEnabled)
+                        {
+                            _log.Debug(string.Format("Retry attempt {0} failed, retrying in {1}s", attempt,
+                                retryInterval.Current.TotalSeconds), ex);
+                        }
                     }
                 }
             }

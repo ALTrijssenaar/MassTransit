@@ -12,12 +12,25 @@
 // specific language governing permissions and limitations under the License.
 namespace MassTransit.Transports.RabbitMq.HaClient
 {
-    using RabbitMQ.Client;
+    using System;
 
 
-    public interface IHaModel :
-        IModel
+    public interface IBasicConsumerEventSink
     {
-        IHaConnection Connection { get; }
+        void DeliveryReceived(string consumerTag, ulong deliveryTag, bool redelivered, string exchange,
+            string routingKey);
+
+        void DeliveryCompleted(string consumerTag, ulong deliveryTag);
+
+        void DeliveryFaulted(string consumerTag, ulong deliveryTag, Exception exception);
+
+
+        void RegisterConsumer(string consumerTag, IHaBasicConsumer haBasicConsumer);
+
+        /// <summary>
+        /// When a consumer is explicitly canceled, it should call this sink
+        /// </summary>
+        /// <param name="consumerTag">The tag of the consumer</param>
+        void CancelConsumer(string consumerTag);
     }
 }

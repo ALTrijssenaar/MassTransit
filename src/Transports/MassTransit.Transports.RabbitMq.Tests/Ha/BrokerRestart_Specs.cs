@@ -10,7 +10,7 @@
 // under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR 
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the 
 // specific language governing permissions and limitations under the License.
-namespace MassTransit.Transports.RabbitMq.Tests
+namespace MassTransit.Transports.RabbitMq.Tests.Ha
 {
     using System;
     using System.Text;
@@ -22,10 +22,10 @@ namespace MassTransit.Transports.RabbitMq.Tests
 
 
     [TestFixture]
-    public class When_unable_to_connect_to_RabbitMQ
+    public class Restarting_the_broker
     {
         [Test]
-        public void Should_create_a_connection()
+        public void Should_continue_to_allow_publishing()
         {
             var connectionFactory = new ConnectionFactory
                 {
@@ -33,20 +33,33 @@ namespace MassTransit.Transports.RabbitMq.Tests
                     VirtualHost = "/",
                 };
 
-            var retryPolicy = new FixedIntervalRetryPolicy(5, TimeSpan.FromSeconds(1));
+            var retryPolicy = new FixedIntervalRetryPolicy(120, TimeSpan.FromSeconds(1));
             using (var connection = new HaConnection(connectionFactory, retryPolicy, 1.Hours()))
             {
                 using (IModel model = connection.CreateModel())
                 {
-                    Assert.IsInstanceOf<HaModel>(model);
+                    try
+                    {
+                        model.ExchangeDeclare("haclient-test", ExchangeType.Fanout, true);
 
-                    model.ExchangeDeclare("haclient-test", ExchangeType.Fanout, true);
-                    model.ExchangeDeclare("haclient-test", ExchangeType.Fanout, true);
+                        _serviceController.Restart();
 
-                    model.BasicPublish("haclient-test", "", model.CreateBasicProperties(),
-                        Encoding.UTF8.GetBytes("Hello, World."));
+                        model.BasicPublish("haclient-test", "", model.CreateBasicProperties(),
+                            Encoding.UTF8.GetBytes("Hello, World."));
+                    }
+                    finally
+                    {
+                        model.ExchangeDelete("haclient-test");
+                    }
                 }
             }
+        }
+
+        readonly RabbitMqServiceController _serviceController;
+
+        public Restarting_the_broker()
+        {
+            _serviceController = new RabbitMqServiceController();
         }
     }
 }

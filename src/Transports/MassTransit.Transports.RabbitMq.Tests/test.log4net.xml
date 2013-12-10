@@ -36,9 +36,13 @@
       <level value="DEBUG" />
     </logger>
 
+    <logger name="MassTransit.Util.RetryPolicy">
+      <level value="DEBUG" />
+    </logger>
+
 		<appender name="console" type="log4net.Appender.ConsoleAppender, log4net">
 			<layout type="log4net.Layout.PatternLayout,log4net">
-				<param name="ConversionPattern" value="%d [%t] %-5p %c - %m%n" />
+				<param name="ConversionPattern" value="%d[hh:mm:ss] %-5p %-5.5t %m%n" />
 			</layout>
 		</appender>
 		<appender name="LogFileAppender"

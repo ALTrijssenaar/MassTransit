@@ -12,12 +12,27 @@
 // specific language governing permissions and limitations under the License.
 namespace MassTransit.Transports.RabbitMq.HaClient
 {
-    using RabbitMQ.Client;
-
-
-    public interface IHaModel :
-        IModel
+    public class PendingDelivery
     {
-        IHaConnection Connection { get; }
+        readonly string _consumerTag;
+        readonly ulong _deliveryTag;
+        readonly string _exchange;
+        readonly bool _redelivered;
+        readonly string _routingKey;
+
+        public PendingDelivery(string consumerTag, ulong deliveryTag, bool redelivered, string exchange,
+            string routingKey)
+        {
+            _consumerTag = consumerTag;
+            _deliveryTag = deliveryTag;
+            _redelivered = redelivered;
+            _exchange = exchange;
+            _routingKey = routingKey;
+        }
+
+        public string Exchange
+        {
+            get { return _exchange; }
+        }
     }
 }

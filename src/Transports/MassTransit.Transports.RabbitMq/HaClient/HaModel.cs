@@ -19,16 +19,20 @@ namespace MassTransit.Transports.RabbitMq.HaClient
     using Logging;
     using RabbitMQ.Client;
     using RabbitMQ.Client.Events;
+    using RabbitMQ.Client.Exceptions;
     using Util;
 
 
     public class HaModel :
-        IHaModel,
-        IModel
+        IHaModel
     {
+        static readonly IRetryExceptionPolicy DeclareExchangeExceptions =
+            new FilterRetryExceptionPolicy<OperationInterruptedException>(x => x.ShutdownReason.ReplyCode == 406);
+
         static readonly ILog _log = Logger.Get<HaModel>();
 
         readonly IHaConnection _connection;
+        readonly HaBasicConsumerList _consumers;
         readonly IDictionary<BindingKey, BoundExchange> _exchangeBindings;
         readonly IDictionary<string, DeclaredExchange> _exchanges;
         readonly int _lockTimeout;
@@ -44,6 +48,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
         ushort _prefetchCount;
         uint _prefetchSize;
 
+
         public HaModel(IHaConnection connection, IModel model, int lockTimeout, RetryPolicy retryPolicy)
         {
             _connection = connection;
@@ -57,6 +62,8 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             _queues = new Dictionary<string, DeclaredQueue>();
             _exchangeBindings = new Dictionary<BindingKey, BoundExchange>();
             _queueBindings = new Dictionary<BindingKey, BoundQueue>();
+
+            _consumers = new HaBasicConsumerList(this, _lockTimeout);
 
             if (_log.IsDebugEnabled)
                 _log.DebugFormat("Model created: {0}", connection);
@@ -110,7 +117,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
         public void ExchangeDeclare(string exchange, string type, bool durable, bool autoDelete,
             IDictionary<string, object> arguments)
         {
-            Execute(model =>
+            Execute(DeclareExchangeExceptions, model =>
                 {
                     var declaredExchange = new DeclaredExchange(exchange, type, durable, autoDelete, arguments);
 
@@ -149,6 +156,9 @@ namespace MassTransit.Transports.RabbitMq.HaClient
         {
             Execute(model =>
                 {
+                    if (_log.IsDebugEnabled)
+                        _log.DebugFormat("Deleting exchange: {0}({1})", exchange, ifUnused);
+
                     model.ExchangeDelete(exchange, ifUnused);
 
                     _exchanges.Remove(exchange);
@@ -259,7 +269,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                             return;
                     }
 
-                    model.ExchangeBind(queue, exchange, routingKey, arguments);
+                    model.QueueBind(queue, exchange, routingKey, arguments);
 
                     _queueBindings[key] = binding;
                 });
@@ -335,30 +345,77 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
         public string BasicConsume(string queue, bool noAck, IBasicConsumer consumer)
         {
-            throw new NotImplementedException();
+            return BasicConsume(queue, noAck, "", consumer);
         }
 
         public string BasicConsume(string queue, bool noAck, string consumerTag, IBasicConsumer consumer)
         {
-            throw new NotImplementedException();
+            return BasicConsume(queue, noAck, consumerTag, false, false, null, consumer);
         }
 
         public string BasicConsume(string queue, bool noAck, string consumerTag, IDictionary<string, object> arguments,
             IBasicConsumer consumer)
         {
-            throw new NotImplementedException();
+            return BasicConsume(queue, noAck, consumerTag, false, false, arguments, consumer);
         }
 
         public string BasicConsume(string queue, bool noAck, string consumerTag, bool noLocal, bool exclusive,
             IDictionary<string, object> arguments,
             IBasicConsumer consumer)
         {
-            throw new NotImplementedException();
+            return Execute(model =>
+                {
+                    if (_log.IsDebugEnabled)
+                    {
+                        _log.DebugFormat("Registering BasicConsumer {0} to queue {1} on connection {2}", consumerTag,
+                            queue, _connection);
+                    }
+
+                    var basicConsumer = new HaBasicConsumer(_consumers, queue, noAck, consumerTag, noLocal, exclusive,
+                        arguments,
+                        consumer);
+
+                    string actualConsumerTag = model.BasicConsume(queue, noAck, consumerTag, noLocal, exclusive,
+                        arguments, basicConsumer);
+
+                    if (actualConsumerTag != consumerTag)
+                        basicConsumer.ConsumerTag = actualConsumerTag;
+
+                    _consumers.AddConsumer(actualConsumerTag, basicConsumer);
+
+                    if (_log.IsDebugEnabled)
+                    {
+                        _log.DebugFormat("BasicConsumer registered {0} to queue {1} on connection {2}", actualConsumerTag,
+                            queue, _connection);
+                    }
+
+                    return actualConsumerTag;
+                });
         }
 
         public void BasicCancel(string consumerTag)
         {
-            throw new NotImplementedException();
+            Execute(model =>
+                {
+                    IHaBasicConsumer consumer;
+                    if (_consumers.TryGetConsumer(consumerTag, out consumer))
+                    {
+                        if (_log.IsDebugEnabled)
+                            _log.DebugFormat("Canceling consumer {0} on connection {1}", consumerTag, _connection);
+
+                        model.BasicCancel(consumerTag);
+
+                        _consumers.Remove(consumerTag);
+
+                        if (_log.IsDebugEnabled)
+                            _log.DebugFormat("Consumer canceled {0} on connection {1}", consumerTag, _connection);
+                    }
+                    else
+                    {
+                        if (_log.IsDebugEnabled)
+                            _log.DebugFormat("Consumer tag {0} not found on connection {1}", consumerTag, _connection);
+                    }
+                });
         }
 
         public void BasicQos(uint prefetchSize, ushort prefetchCount, bool global)
@@ -413,27 +470,27 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
         public void BasicAck(ulong deliveryTag, bool multiple)
         {
-            throw new NotImplementedException();
+            Execute(model => { model.BasicAck(deliveryTag, multiple); });
         }
 
         public void BasicReject(ulong deliveryTag, bool requeue)
         {
-            throw new NotImplementedException();
+            Execute(model => { model.BasicReject(deliveryTag, requeue); });
         }
 
         public void BasicNack(ulong deliveryTag, bool multiple, bool requeue)
         {
-            throw new NotImplementedException();
+            Execute(model => { model.BasicNack(deliveryTag, multiple, requeue); });
         }
 
         public void BasicRecover(bool requeue)
         {
-            throw new NotImplementedException();
+            Execute(model => { model.BasicRecover(requeue); });
         }
 
         public void BasicRecoverAsync(bool requeue)
         {
-            throw new NotImplementedException();
+            Execute(model => { model.BasicRecoverAsync(requeue); });
         }
 
         public BasicGetResult BasicGet(string queue, bool noAck)
@@ -488,8 +545,8 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
         public IBasicConsumer DefaultConsumer
         {
-            get { return Execute(model => model.DefaultConsumer); }
-            set { Execute(model => model.DefaultConsumer = new HaBasicConsumer(value)); }
+            get { throw new NotImplementedException("Default consumer is not supported"); }
+            set { throw new NotImplementedException("Default consumer is not supported"); }
         }
 
         public ShutdownEventArgs CloseReason
@@ -549,9 +606,23 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             remove { throw new NotImplementedException(); }
         }
 
+        public IHaConnection Connection
+        {
+            get { return _connection; }
+        }
+
         void Execute(Action<IModel> callback)
         {
             Execute<object>(connection =>
+                {
+                    callback(connection);
+                    return null;
+                });
+        }
+
+        void Execute(IRetryExceptionPolicy retryExceptionPolicy, Action<IModel> callback)
+        {
+            Execute<object>(retryExceptionPolicy, connection =>
                 {
                     callback(connection);
                     return null;
@@ -730,10 +801,9 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             {
                 if (_log.IsDebugEnabled)
                 {
-                    _log.DebugFormat("ModelShutdown on connection: {4}, {0} - {1} ({2})", reason.ReplyCode,
+                    _log.DebugFormat("ModelShutdown on connection: {3}, {0} - {1} ({2})", reason.ReplyCode,
                         reason.ReplyText, reason.Initiator, _connection);
                 }
-
 
                 DetachModel(model);
 

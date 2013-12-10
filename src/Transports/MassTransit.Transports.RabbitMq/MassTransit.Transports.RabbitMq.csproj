@@ -105,12 +105,15 @@
     <Compile Include="HaClient\DeclaredExchange.cs" />
     <Compile Include="HaClient\DeclaredQueue.cs" />
     <Compile Include="HaClient\HaBasicConsumer.cs" />
+    <Compile Include="HaClient\HaBasicConsumerList.cs" />
     <Compile Include="HaClient\HaConnection.cs" />
+    <Compile Include="HaClient\IBasicConsumerEventSink.cs" />
     <Compile Include="HaClient\IHaConnection.cs" />
     <Compile Include="HaClient\IHaModel.cs" />
     <Compile Include="HaClient\HaModel.cs" />
     <Compile Include="HaClient\BindingKey.cs" />
     <Compile Include="HaClient\PendingBasicPublish.cs" />
+    <Compile Include="HaClient\PendingDelivery.cs" />
     <Compile Include="InboundRabbitMqTransport.cs" />
     <Compile Include="IRabbitMqEndpointAddress.cs" />
     <Compile Include="Management\IRabbitMqEndpointManagement.cs" />

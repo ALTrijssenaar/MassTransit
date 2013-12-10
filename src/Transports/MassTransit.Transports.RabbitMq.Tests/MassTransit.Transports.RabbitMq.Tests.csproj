@@ -84,6 +84,7 @@
     <Reference Include="System" />
     <Reference Include="System.Core">
     </Reference>
+    <Reference Include="System.ServiceProcess" />
     <Reference Include="System.XML" />
   </ItemGroup>
   <ItemGroup>
@@ -94,8 +95,10 @@
     <Compile Include="Assumptions\RoutingAssumptions.cs" />
     <Compile Include="Assumptions\TransactionAssumptions.cs" />
     <Compile Include="Bytes_Specs.cs" />
-    <Compile Include="ConnectingFailure_Specs.cs" />
+    <Compile Include="Ha\BrokerRestart_Specs.cs" />
+    <Compile Include="Ha\Model_Specs.cs" />
     <Compile Include="ContextSetup.cs" />
+    <Compile Include="Ha\RabbitMqServiceController.cs" />
     <Compile Include="When_a_message_consumer_subscribes_to_control_bus.cs" />
     <Compile Include="Given_a_service_bus_and_a_temporary_client.cs" />
     <Compile Include="Given_two_rabbitmq_buses_walk_into_a_bar.cs" />

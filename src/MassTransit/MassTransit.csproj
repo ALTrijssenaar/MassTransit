@@ -742,6 +742,7 @@
     <Compile Include="Transports\Loopback\LoopbackTransportFactory.cs" />
     <Compile Include="Transports\Transport.cs" />
     <Compile Include="Util\CheckConvention.cs" />
+    <Compile Include="Util\FilterRetryExceptionPolicy.cs" />
     <Compile Include="Util\FixedIntervalRetryPolicy.cs" />
     <Compile Include="Util\IdempotentHashtable.cs" />
     <Compile Include="Util\IndexedSagaProperty.cs" />
