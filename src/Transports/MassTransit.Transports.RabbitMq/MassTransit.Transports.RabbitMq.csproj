@@ -100,6 +100,17 @@
     <Compile Include="Configuration\Configurators\UsernameConnectionFactoryConfigurator.cs" />
     <Compile Include="Configuration\RabbitMqTransportFactoryExtensions.cs" />
     <Compile Include="ExchangeBinding.cs" />
+    <Compile Include="HaClient\BoundExchange.cs" />
+    <Compile Include="HaClient\BoundQueue.cs" />
+    <Compile Include="HaClient\DeclaredExchange.cs" />
+    <Compile Include="HaClient\DeclaredQueue.cs" />
+    <Compile Include="HaClient\HaBasicConsumer.cs" />
+    <Compile Include="HaClient\HaConnection.cs" />
+    <Compile Include="HaClient\IHaConnection.cs" />
+    <Compile Include="HaClient\IHaModel.cs" />
+    <Compile Include="HaClient\HaModel.cs" />
+    <Compile Include="HaClient\BindingKey.cs" />
+    <Compile Include="HaClient\PendingBasicPublish.cs" />
     <Compile Include="InboundRabbitMqTransport.cs" />
     <Compile Include="IRabbitMqEndpointAddress.cs" />
     <Compile Include="Management\IRabbitMqEndpointManagement.cs" />
@@ -153,6 +164,7 @@
     <None Include="packages.config" />
     <None Include="README.md" />
   </ItemGroup>
+  <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="$(SolutionDir)\.nuget\NuGet.targets" Condition="Exists('$(SolutionDir)\.nuget\NuGet.targets')" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 

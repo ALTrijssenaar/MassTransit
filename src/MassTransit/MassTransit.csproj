@@ -742,12 +742,21 @@
     <Compile Include="Transports\Loopback\LoopbackTransportFactory.cs" />
     <Compile Include="Transports\Transport.cs" />
     <Compile Include="Util\CheckConvention.cs" />
+    <Compile Include="Util\FixedIntervalRetryPolicy.cs" />
     <Compile Include="Util\IdempotentHashtable.cs" />
     <Compile Include="Util\IndexedSagaProperty.cs" />
+    <Compile Include="Util\IRetryExceptionPolicy.cs" />
     <Compile Include="Util\LambdaEqualityComparer.cs" />
+    <Compile Include="Util\LockTimeoutException.cs" />
+    <Compile Include="Util\ReferenceLock.cs" />
+    <Compile Include="Util\RetryAllRetryExceptionPolicy.cs" />
     <Compile Include="Util\ObjectExtensions.cs" />
     <Compile Include="Util\ReSharperStaticAnalysis.cs" />
+    <Compile Include="Util\Retry.cs" />
+    <Compile Include="Util\RetryExceptRetryExceptionPolicy.cs" />
+    <Compile Include="Util\RetryPolicy.cs" />
     <Compile Include="Util\StreamExtensions.cs" />
+    <Compile Include="Util\TimedLock.cs" />
     <Compile Include="Util\UriExtensions.cs" />
   </ItemGroup>
   <ItemGroup>
