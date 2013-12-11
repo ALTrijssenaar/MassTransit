@@ -14,7 +14,10 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 {
     using System;
     using System.Collections.Generic;
+    using System.Linq;
     using Logging;
+    using Magnum.Extensions;
+    using RabbitMQ.Client;
     using Util;
 
 
@@ -22,12 +25,12 @@ namespace MassTransit.Transports.RabbitMq.HaClient
         IBasicConsumerEventSink
     {
         static readonly ILog _log = Logger.Get<HaBasicConsumerList>();
+        readonly IDictionary<string, IHaBasicConsumer> _consumers;
 
         readonly IDictionary<DeliveryKey, PendingDelivery> _deliveries;
+        readonly int _lockTimeout;
         readonly IHaModel _model;
         readonly object _monitor = new object();
-        readonly IDictionary<string, IHaBasicConsumer> _consumers;
-        readonly int _lockTimeout;
 
         public HaBasicConsumerList(IHaModel model, int lockTimeout)
         {
@@ -38,41 +41,63 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             _deliveries = new Dictionary<DeliveryKey, PendingDelivery>();
         }
 
-        public void DeliveryReceived(string consumerTag, ulong deliveryTag, bool redelivered, string exchange,
+        public int Count
+        {
+            get
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    return _consumers.Count;
+                }
+            }
+        }
+
+        void IBasicConsumerEventSink.DeliveryReceived(string consumerTag, ulong deliveryTag, bool redelivered,
+            string exchange,
             string routingKey)
         {
-            var key = new DeliveryKey(consumerTag, deliveryTag);
-
-            _deliveries[key] = new PendingDelivery(consumerTag, deliveryTag, redelivered, exchange, routingKey);
-        }
-
-        public void DeliveryCompleted(string consumerTag, ulong deliveryTag)
-        {
-            var key = new DeliveryKey(consumerTag, deliveryTag);
-
-            _deliveries.Remove(key);
-        }
-
-        public void DeliveryFaulted(string consumerTag, ulong deliveryTag, Exception exception)
-        {
-            var key = new DeliveryKey(consumerTag, deliveryTag);
-
-            PendingDelivery delivery;
-            if (_deliveries.TryGetValue(key, out delivery))
+            using (TimedLock.Lock(_monitor, _lockTimeout))
             {
-                // ultimately want to redirect the deliveryTag to the same consumer for processing
-                if (_log.IsDebugEnabled)
-                {
-                    _log.DebugFormat("Delivery {0} faulted for consumer {1} from exchange {2} on connection {3}",
-                        consumerTag, deliveryTag, delivery.Exchange, _model.Connection);
-                }
+                var key = new DeliveryKey(consumerTag, deliveryTag);
 
+                _deliveries[key] = new PendingDelivery(consumerTag, deliveryTag, redelivered, exchange, routingKey);
+            }
+        }
+
+        void IBasicConsumerEventSink.DeliveryCompleted(string consumerTag, ulong deliveryTag)
+        {
+            using (TimedLock.Lock(_monitor, _lockTimeout))
+            {
+                var key = new DeliveryKey(consumerTag, deliveryTag);
 
                 _deliveries.Remove(key);
             }
         }
 
-        public void RegisterConsumer(string consumerTag, IHaBasicConsumer haBasicConsumer)
+        void IBasicConsumerEventSink.DeliveryFaulted(string consumerTag, ulong deliveryTag, Exception exception)
+        {
+            using (TimedLock.Lock(_monitor, _lockTimeout))
+            {
+                var key = new DeliveryKey(consumerTag, deliveryTag);
+
+                PendingDelivery delivery;
+                if (_deliveries.TryGetValue(key, out delivery))
+                {
+                    // ultimately want to redirect the deliveryTag to the same consumer for processing
+                    if (_log.IsDebugEnabled)
+                    {
+                        _log.DebugFormat(
+                            "Delivery {0} faulted for consumer {1} from exchange {2} on connection {3}",
+                            consumerTag, deliveryTag, delivery.Exchange, _model.Connection);
+                    }
+
+
+                    _deliveries.Remove(key);
+                }
+            }
+        }
+
+        void IBasicConsumerEventSink.RegisterConsumer(string consumerTag, IHaBasicConsumer haBasicConsumer)
         {
             using (TimedLock.Lock(_monitor, _lockTimeout))
             {
@@ -80,7 +105,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             }
         }
 
-        public void CancelConsumer(string consumerTag)
+        void IBasicConsumerEventSink.CancelConsumer(string consumerTag)
         {
             using (TimedLock.Lock(_monitor, _lockTimeout))
             {
@@ -88,29 +113,55 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             }
         }
 
-        public void AddConsumer(string consumerTag, IHaBasicConsumer consumer)
-        {
-            if (_consumers.ContainsKey(consumerTag))
-            {
-                if (_log.IsWarnEnabled)
-                    _log.WarnFormat("Duplicate consumer tag {0} added on connection {1}", consumerTag, _model.Connection);
-            }
-
-            _consumers[consumerTag] = consumer;
-        }
-
-
         public bool TryGetConsumer(string consumerTag, out IHaBasicConsumer consumer)
         {
             return _consumers.TryGetValue(consumerTag, out consumer);
         }
-
 
         public void Remove(string consumerTag)
         {
             _consumers.Remove(consumerTag);
         }
 
+        public void ModelConnected(IModel model)
+        {
+            List<IHaBasicConsumer> consumers;
+            using (TimedLock.Lock(_monitor, _lockTimeout))
+            {
+                if (_consumers.Count == 0)
+                    return;
+
+                if (_log.IsDebugEnabled)
+                    _log.DebugFormat("Reconnecting {0} consumers on {1}", _consumers.Count, _model.Connection);
+
+                consumers = _consumers.Values.ToList();
+            }
+
+            consumers.Each(x =>
+            {
+                if (_log.IsDebugEnabled)
+                    _log.DebugFormat("Reconnecting {0} consumers on {1}", x.ConsumerTag, _model.Connection);
+
+                model.BasicConsume(x.Queue, x.NoAck, x.ConsumerTag, x.NoLocal, x.Exclusive, x.Arguments, x);
+            });
+        }
+
+        public void HandleModelDisposed()
+        {
+            using (TimedLock.Lock(_monitor, _lockTimeout))
+            {
+                if (_consumers.Count == 0)
+                    return;
+
+                if (_log.IsDebugEnabled)
+                    _log.DebugFormat("Shutting down {0} consumers on {1}", _consumers.Count, _model.Connection);
+
+                var args = new ShutdownEventArgs(ShutdownInitiator.Application, 200, "Ok");
+
+                _consumers.Values.ToList().Each(x => x.HandleModelShutdown(_model, args));
+                _consumers.Clear();
+            }
+        }
 
         struct DeliveryKey :
             IEquatable<DeliveryKey>

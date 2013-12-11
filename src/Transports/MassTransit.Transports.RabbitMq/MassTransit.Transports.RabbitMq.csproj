@@ -108,6 +108,7 @@
     <Compile Include="HaClient\HaBasicConsumerList.cs" />
     <Compile Include="HaClient\HaConnection.cs" />
     <Compile Include="HaClient\IBasicConsumerEventSink.cs" />
+    <Compile Include="HaClient\IHaBasicConsumer.cs" />
     <Compile Include="HaClient\IHaConnection.cs" />
     <Compile Include="HaClient\IHaModel.cs" />
     <Compile Include="HaClient\HaModel.cs" />

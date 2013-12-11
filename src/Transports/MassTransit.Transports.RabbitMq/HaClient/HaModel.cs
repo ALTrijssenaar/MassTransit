@@ -17,6 +17,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
     using System.Linq;
     using System.Threading;
     using Logging;
+    using Magnum.Extensions;
     using RabbitMQ.Client;
     using RabbitMQ.Client.Events;
     using RabbitMQ.Client.Exceptions;
@@ -52,7 +53,6 @@ namespace MassTransit.Transports.RabbitMq.HaClient
         public HaModel(IHaConnection connection, IModel model, int lockTimeout, RetryPolicy retryPolicy)
         {
             _connection = connection;
-            _model = model;
             _lockTimeout = lockTimeout;
             _retryPolicy = retryPolicy;
 
@@ -68,6 +68,8 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             if (_log.IsDebugEnabled)
                 _log.DebugFormat("Model created: {0}", connection);
 
+            _model = model;
+
             ConfigureModel(model);
         }
 
@@ -80,6 +82,8 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
                 if (_log.IsDebugEnabled)
                     _log.DebugFormat("Disposing of model on connection {0}", _connection);
+
+                _consumers.HandleModelDisposed();
 
                 if (_model != null)
                 {
@@ -163,13 +167,11 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
                     _exchanges.Remove(exchange);
 
-                    IEnumerable<BindingKey> keys = _exchangeBindings
-                        .Where(x => x.Key.Source == exchange
-                                    || x.Key.Destination == exchange)
-                        .Select(x => x.Key);
-
-                    foreach (BindingKey key in keys)
-                        _exchangeBindings.Remove(key);
+                    _exchangeBindings
+                        .Where(x => x.Key.Source == exchange || x.Key.Destination == exchange)
+                        .Select(x => x.Key)
+                        .ToList()
+                        .Each(x => _exchangeBindings.Remove(x));
                 });
         }
 
@@ -304,10 +306,12 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                     uint result = model.QueueDelete(queue, ifUnused, ifEmpty);
 
                     _queues.Remove(queue);
-                    IEnumerable<BindingKey> keys = _queueBindings.Keys.Where(x => x.Destination == queue)
-                                                                 .Select(x => new BindingKey(x.Destination, x.Source));
-                    foreach (BindingKey key in keys)
-                        _queueBindings.Remove(key);
+
+                    _queueBindings
+                        .Keys.Where(x => x.Destination == queue)
+                        .Select(x => new BindingKey(x.Destination, x.Source))
+                        .ToList()
+                        .Each(x => _queueBindings.Remove(x));
 
                     return result;
                 });
@@ -378,14 +382,10 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                     string actualConsumerTag = model.BasicConsume(queue, noAck, consumerTag, noLocal, exclusive,
                         arguments, basicConsumer);
 
-                    if (actualConsumerTag != consumerTag)
-                        basicConsumer.ConsumerTag = actualConsumerTag;
-
-                    _consumers.AddConsumer(actualConsumerTag, basicConsumer);
-
                     if (_log.IsDebugEnabled)
                     {
-                        _log.DebugFormat("BasicConsumer registered {0} to queue {1} on connection {2}", actualConsumerTag,
+                        _log.DebugFormat("BasicConsumer registered {0} to queue {1} on connection {2}",
+                            actualConsumerTag,
                             queue, _connection);
                     }
 
@@ -397,15 +397,13 @@ namespace MassTransit.Transports.RabbitMq.HaClient
         {
             Execute(model =>
                 {
+                    if (_log.IsDebugEnabled)
+                        _log.DebugFormat("Canceling consumer {0} on connection {1}", consumerTag, _connection);
+
                     IHaBasicConsumer consumer;
                     if (_consumers.TryGetConsumer(consumerTag, out consumer))
                     {
-                        if (_log.IsDebugEnabled)
-                            _log.DebugFormat("Canceling consumer {0} on connection {1}", consumerTag, _connection);
-
                         model.BasicCancel(consumerTag);
-
-                        _consumers.Remove(consumerTag);
 
                         if (_log.IsDebugEnabled)
                             _log.DebugFormat("Consumer canceled {0} on connection {1}", consumerTag, _connection);
@@ -639,13 +637,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             using (TimedLock.Lock(_monitor, _lockTimeout))
             {
                 if (_model == null)
-                {
-                    if (false == _creatingModel)
-                    {
-                        ThreadPool.QueueUserWorkItem(_ => CreateModel());
-                        _creatingModel = true;
-                    }
-                }
+                    CreateModelAsync();
 
                 while (_model == null)
                     Monitor.Wait(_monitor, _lockTimeout);
@@ -654,6 +646,15 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                     throw new LockTimeoutException();
 
                 return _retryPolicy.Execute(retryExceptionPolicy, () => callback(_model));
+            }
+        }
+
+        void CreateModelAsync()
+        {
+            if (false == _creatingModel)
+            {
+                ThreadPool.QueueUserWorkItem(_ => CreateModel());
+                _creatingModel = true;
             }
         }
 
@@ -666,8 +667,17 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                     if (_disposed)
                         return;
 
+                    if (_creatingModel == false)
+                        return;
+
                     try
                     {
+                        if (_model != null)
+                        {
+                            _log.DebugFormat("CreateModel requested but model already exists");
+                            return;
+                        }
+
                         _model = _retryPolicy.Execute(() =>
                             {
                                 IModel model = _connection.RecreateModel();
@@ -676,6 +686,8 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
                                 return model;
                             });
+
+                        _consumers.ModelConnected(_model);
                     }
                     finally
                     {
@@ -707,20 +719,13 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             if (_prefetchSize > 0 || _prefetchCount > 0)
                 model.BasicQos(_prefetchSize, _prefetchCount, false);
 
-            foreach (DeclaredExchange exchange in _exchanges.Values)
-            {
-                model.ExchangeDeclare(exchange.Exchange, exchange.Type, exchange.Durable, exchange.AutoDelete,
-                    exchange.Arguments);
-            }
+            _exchanges.Values.Each(x => model.ExchangeDeclare(x.Exchange, x.Type, x.Durable, x.AutoDelete, x.Arguments));
 
-            foreach (BoundExchange binding in _exchangeBindings.Values)
-                model.ExchangeBind(binding.Destination, binding.Source, binding.RoutingKey, binding.Arguments);
+            _exchangeBindings.Values.Each(x => model.ExchangeBind(x.Destination, x.Source, x.RoutingKey, x.Arguments));
 
-            foreach (DeclaredQueue queue in _queues.Values)
-                model.QueueDeclare(queue.QueueName, queue.Durable, queue.Exclusive, queue.AutoDelete, queue.Arguments);
+            _queues.Values.Each(x => model.QueueDeclare(x.QueueName, x.Durable, x.Exclusive, x.AutoDelete, x.Arguments));
 
-            foreach (BoundQueue binding in _queueBindings.Values)
-                model.QueueBind(binding.Queue, binding.Exchange, binding.RoutingKey, binding.Arguments);
+            _queueBindings.Values.Each(x => model.QueueBind(x.Queue, x.Exchange, x.RoutingKey, x.Arguments));
         }
 
 
@@ -808,6 +813,10 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                 DetachModel(model);
 
                 _model = null;
+
+                // to keep consumers alive, the model should be recreated so that it is reattached
+                if (_consumers.Count > 0)
+                    CreateModelAsync();
             }
         }
     }
