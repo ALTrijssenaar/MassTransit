@@ -12,7 +12,6 @@
 // specific language governing permissions and limitations under the License.
 namespace MassTransit.Transports.RabbitMq.HaClient
 {
-    using System;
     using System.Threading;
     using RabbitMQ.Client;
     using Util;
@@ -20,26 +19,68 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
     public class PendingBasicPublish
     {
-        readonly ulong _next;
-        readonly string _exchange;
-        readonly string _routingKey;
-        readonly bool _mandatory;
-        readonly bool _immediate;
         readonly IBasicProperties _basicProperties;
         readonly byte[] _body;
+        readonly string _exchange;
+        readonly bool _immediate;
+        readonly bool _mandatory;
         readonly object _monitor = new object();
+        readonly string _routingKey;
+        readonly ulong _sequenceNumber;
         bool _ackd;
+        ulong _modelSequenceNumber;
 
-        public PendingBasicPublish(ulong next, string exchange, string routingKey, bool mandatory, bool immediate,
-            IBasicProperties basicProperties, byte[] body)
+        public PendingBasicPublish(ulong sequenceNumber, ulong modelSequenceNumber, string exchange, string routingKey,
+            bool mandatory, bool immediate, IBasicProperties basicProperties, byte[] body)
         {
-            _next = next;
+            _sequenceNumber = sequenceNumber;
+            _modelSequenceNumber = modelSequenceNumber;
             _exchange = exchange;
             _routingKey = routingKey;
             _mandatory = mandatory;
             _immediate = immediate;
             _basicProperties = basicProperties;
             _body = body;
+        }
+
+        public ulong SequenceNumber
+        {
+            get { return _sequenceNumber; }
+        }
+
+        public ulong ModelSequenceNumber
+        {
+            get { return _modelSequenceNumber; }
+        }
+
+        public string Exchange
+        {
+            get { return _exchange; }
+        }
+
+        public string RoutingKey
+        {
+            get { return _routingKey; }
+        }
+
+        public bool Mandatory
+        {
+            get { return _mandatory; }
+        }
+
+        public bool Immediate
+        {
+            get { return _immediate; }
+        }
+
+        public IBasicProperties BasicProperties
+        {
+            get { return _basicProperties; }
+        }
+
+        public byte[] Body
+        {
+            get { return _body; }
         }
 
         public void Ack()
@@ -60,6 +101,23 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                     if (!Monitor.Wait(_monitor, timeout))
                         throw new LockTimeoutException();
                 }
+            }
+        }
+
+        public void Nack()
+        {
+        }
+
+        public ulong Republish(IModel model, int timeout)
+        {
+            using (TimedLock.Lock(_monitor, timeout))
+            {
+                ulong modelSequenceNumber = model.NextPublishSeqNo;
+                model.BasicPublish(_exchange, _routingKey, _mandatory, _immediate, _basicProperties, _body);
+
+                _modelSequenceNumber = modelSequenceNumber;
+
+                return modelSequenceNumber;
             }
         }
     }

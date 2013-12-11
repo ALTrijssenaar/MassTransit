@@ -45,10 +45,11 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
         bool _creatingModel;
         bool _disposed;
+
         IModel _model;
+        ulong _nextPublishSequenceNumber;
         ushort _prefetchCount;
         uint _prefetchSize;
-
 
         public HaModel(IHaConnection connection, IModel model, int lockTimeout, RetryPolicy retryPolicy)
         {
@@ -69,6 +70,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                 _log.DebugFormat("Model created: {0}", connection);
 
             _model = model;
+            _nextPublishSequenceNumber = 1;
 
             ConfigureModel(model);
         }
@@ -88,6 +90,8 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                 if (_model != null)
                 {
                     DetachModel(_model);
+
+                    NackPendingPublishes();
 
                     _model.Dispose();
                     _model = null;
@@ -443,7 +447,6 @@ namespace MassTransit.Transports.RabbitMq.HaClient
             BasicPublish(exchange, routingKey, mandatory, false, basicProperties, body);
         }
 
-
         public void BasicPublish(string exchange, string routingKey, bool mandatory, bool immediate,
             IBasicProperties basicProperties, byte[] body)
         {
@@ -452,13 +455,15 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                     if (basicProperties == null)
                         basicProperties = CreateBasicProperties();
 
-                    ulong next = model.NextPublishSeqNo;
-                    var pendingBasicPublish = new PendingBasicPublish(next, exchange, routingKey, mandatory, immediate,
-                        basicProperties, body);
-
+                    ulong modelSequenceNumber = model.NextPublishSeqNo;
                     model.BasicPublish(exchange, routingKey, mandatory, immediate, basicProperties, body);
 
-                    _unconfirmed.Add(next, pendingBasicPublish);
+                    ulong sequenceNumber = _nextPublishSequenceNumber++;
+                    var pendingBasicPublish = new PendingBasicPublish(sequenceNumber, modelSequenceNumber, exchange,
+                        routingKey, mandatory, immediate,
+                        basicProperties, body);
+
+                    _unconfirmed.Add(modelSequenceNumber, pendingBasicPublish);
 
                     return pendingBasicPublish;
                 });
@@ -559,55 +564,147 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
         public ulong NextPublishSeqNo
         {
-            get { return Execute(model => model.NextPublishSeqNo); }
+            get { return Execute(model => _nextPublishSequenceNumber); }
         }
 
         public event ModelShutdownEventHandler ModelShutdown
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _modelShutdown += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _modelShutdown -= value;
+                }
+            }
         }
 
         public event BasicReturnEventHandler BasicReturn
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _basicReturn += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _basicReturn -= value;
+                }
+            }
         }
 
         public event BasicAckEventHandler BasicAcks
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _basicAcks += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _basicAcks -= value;
+                }
+            }
         }
 
         public event BasicNackEventHandler BasicNacks
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _basicNacks += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _basicNacks -= value;
+                }
+            }
         }
 
         public event CallbackExceptionEventHandler CallbackException
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _callbackException += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _callbackException -= value;
+                }
+            }
         }
 
         public event FlowControlEventHandler FlowControl
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _flowControl += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _flowControl -= value;
+                }
+            }
         }
 
         public event BasicRecoverOkEventHandler BasicRecoverOk
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _basicRecoverOk += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _basicRecoverOk -= value;
+                }
+            }
         }
 
         public IHaConnection Connection
         {
             get { return _connection; }
         }
+
+        event ModelShutdownEventHandler _modelShutdown;
+        event BasicReturnEventHandler _basicReturn;
+        event BasicAckEventHandler _basicAcks;
+        event BasicNackEventHandler _basicNacks;
+        event CallbackExceptionEventHandler _callbackException;
+        event FlowControlEventHandler _flowControl;
+        event BasicRecoverOkEventHandler _basicRecoverOk;
 
         void Execute(Action<IModel> callback)
         {
@@ -667,7 +764,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                     if (_disposed)
                         return;
 
-                    if (_creatingModel == false)
+                    if (false == _creatingModel)
                         return;
 
                     try
@@ -688,6 +785,9 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                             });
 
                         _consumers.ModelConnected(_model);
+
+                        if (_unconfirmed.Count > 0)
+                            RepublishUnconfirmedPublishes();
                     }
                     finally
                     {
@@ -702,6 +802,47 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                 if (_log.IsErrorEnabled)
                     _log.Error(string.Format("Failed to create model: {0}", _connection), ex);
             }
+        }
+
+        void RepublishUnconfirmedPublishes()
+        {
+            using (TimedLock.Lock(_monitor, _lockTimeout))
+            {
+                PendingBasicPublish[] unconfirmed = _unconfirmed.Select(x => x.Value).ToArray();
+
+                ThreadPool.QueueUserWorkItem(_ => RepublishPending(unconfirmed));
+
+                _unconfirmed.Clear();
+            }
+        }
+
+        void RepublishPending(IEnumerable<PendingBasicPublish> pendingBasicPublishes)
+        {
+            var unconfirmed = new Queue<PendingBasicPublish>(pendingBasicPublishes);
+
+            Execute(model =>
+                {
+                    try
+                    {
+                        while (unconfirmed.Count > 0)
+                        {
+                            PendingBasicPublish pending = unconfirmed.Peek();
+
+                            ulong sequenceNumber = pending.Republish(model, _lockTimeout);
+                            _unconfirmed.Add(sequenceNumber, pending);
+                            unconfirmed.Dequeue();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Error("Failed to republished messages", ex);
+                    }
+                    finally
+                    {
+                        if (unconfirmed.Count > 0)
+                            ThreadPool.QueueUserWorkItem(_ => RepublishPending(unconfirmed));
+                    }
+                });
         }
 
         void ConfigureModel(IModel model)
@@ -743,22 +884,85 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
         void HandleBasicRecoverOk(IModel model, EventArgs args)
         {
-            throw new NotImplementedException();
         }
 
         void HandleFlowControl(IModel sender, FlowControlEventArgs args)
         {
-            throw new NotImplementedException();
         }
 
         void HandleCallbackException(object sender, CallbackExceptionEventArgs e)
         {
-            throw new NotImplementedException();
         }
 
         void HandleBasicNacks(IModel model, BasicNackEventArgs args)
         {
-            throw new NotImplementedException();
+            Execute(m =>
+                {
+                    if (args.Multiple)
+                    {
+                        int lastIndex;
+                        if (_unconfirmed.ContainsKey(args.DeliveryTag))
+                            lastIndex = _unconfirmed.IndexOfKey(args.DeliveryTag);
+                        else if (_unconfirmed.Any(x => x.Key < args.DeliveryTag))
+                            lastIndex = _unconfirmed.IndexOfKey(_unconfirmed.Last(x => x.Key < args.DeliveryTag).Key);
+                        else
+                            return;
+
+                        NackPendingPublish(0, lastIndex);
+                    }
+                    else
+                    {
+                        int index = _unconfirmed.IndexOfKey(args.DeliveryTag);
+                        NackPendingPublish(index, index);
+                    }
+                });
+        }
+
+        void NackPendingPublish(int first, int last)
+        {
+            for (int i = last; i >= first; i--)
+            {
+                PendingBasicPublish pending = _unconfirmed.Values[i];
+                try
+                {
+                    pending.Nack();
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn(string.Format("Exception thrown during BasicAck: {0}({1})", pending.SequenceNumber,
+                        pending.ModelSequenceNumber), ex);
+                }
+            }
+        }
+
+        void NackPendingPublishes()
+        {
+            BasicNackEventHandler basicNacks = _basicNacks;
+            for (int i = _unconfirmed.Count - 1; i >= 0; i--)
+            {
+                PendingBasicPublish pending = _unconfirmed.Values[i];
+                try
+                {
+                    pending.Nack();
+                    if (basicNacks != null)
+                    {
+                        basicNacks(this, new BasicNackEventArgs
+                            {
+                                DeliveryTag = pending.SequenceNumber,
+                                Multiple = false,
+                            });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn(string.Format("Exception thrown during BasicAck: {0}({1})", pending.SequenceNumber,
+                        pending.ModelSequenceNumber), ex);
+                }
+                finally
+                {
+                    _unconfirmed.RemoveAt(i);
+                }
+            }
         }
 
         void HandleBasicAcks(IModel model, BasicAckEventArgs args)
@@ -787,17 +991,43 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
         void AckPendingPublish(int first, int last)
         {
+            BasicAckEventHandler basicAcks = _basicAcks;
             for (int i = last; i >= first; i--)
             {
                 PendingBasicPublish pending = _unconfirmed.Values[i];
-                pending.Ack();
-                _unconfirmed.RemoveAt(i);
+                try
+                {
+                    pending.Ack();
+
+                    if (basicAcks != null)
+                    {
+                        basicAcks(this, new BasicAckEventArgs
+                            {
+                                DeliveryTag = pending.SequenceNumber,
+                                Multiple = false,
+                            });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn(string.Format("Exception thrown during BasicAck: {0}({1})", pending.SequenceNumber,
+                        pending.ModelSequenceNumber), ex);
+                }
+                finally
+                {
+                    _unconfirmed.RemoveAt(i);
+                }
             }
         }
 
         void HandleBasicReturn(IModel model, BasicReturnEventArgs args)
         {
-            throw new NotImplementedException();
+            using (TimedLock.Lock(_monitor, _lockTimeout))
+            {
+                BasicReturnEventHandler basicReturn = _basicReturn;
+                if (basicReturn != null)
+                    basicReturn(this, args);
+            }
         }
 
         void HandleModelShutdown(IModel model, ShutdownEventArgs reason)
@@ -811,7 +1041,6 @@ namespace MassTransit.Transports.RabbitMq.HaClient
                 }
 
                 DetachModel(model);
-
                 _model = null;
 
                 // to keep consumers alive, the model should be recreated so that it is reattached

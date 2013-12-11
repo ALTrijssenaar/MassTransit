@@ -29,6 +29,7 @@ namespace MassTransit.Transports.RabbitMq.HaClient
     // TODO handle the closing events by setting _connection to null forcing a reconnect
     // on the next call that uses the connection
 
+
     public class HaConnection :
         IHaConnection
     {
@@ -41,6 +42,10 @@ namespace MassTransit.Transports.RabbitMq.HaClient
         bool _connecting;
         IConnection _connection;
         bool _disposed;
+        event ConnectionUnblockedEventHandler _connectionUnblocked;
+        event ConnectionShutdownEventHandler _connectionShutdown;
+        event CallbackExceptionEventHandler _callbackException;
+        event ConnectionBlockedEventHandler _connectionBlocked;
 
         public HaConnection(ConnectionFactory connectionFactory, RetryPolicy retryPolicy, TimeSpan lockTimeout)
         {
@@ -201,26 +206,74 @@ namespace MassTransit.Transports.RabbitMq.HaClient
 
         public event ConnectionShutdownEventHandler ConnectionShutdown
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _connectionShutdown += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _connectionShutdown -= value;
+                }
+            }
         }
 
         public event CallbackExceptionEventHandler CallbackException
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _callbackException += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _callbackException -= value;
+                }
+            }
         }
 
         public event ConnectionBlockedEventHandler ConnectionBlocked
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _connectionBlocked += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _connectionBlocked -= value;
+                }
+            }
         }
 
         public event ConnectionUnblockedEventHandler ConnectionUnblocked
         {
-            add { throw new NotImplementedException(); }
-            remove { throw new NotImplementedException(); }
+            add
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _connectionUnblocked += value;
+                }
+            }
+            remove
+            {
+                using (TimedLock.Lock(_monitor, _lockTimeout))
+                {
+                    _connectionUnblocked -= value;
+                }
+            }
         }
 
         public void OnModelDisposed(IHaModel model)
